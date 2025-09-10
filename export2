@@ -1,6 +1,6 @@
 # === CONFIG ===
 TENANT_ID     = "fca47690-ab7d-413c-90e4-aafd92aac945"
-CLIENT_ID     = "e6099f06-7b10-4994-9887-71d0d2d8e19a"
+CLIENT_ID     = ""
 CLIENT_SECRET = ""
 
 DAY_UTC       = "2025-09-01"         # UTC day to export (YYYY-MM-DD)
