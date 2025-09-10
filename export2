@@ -1,7 +1,7 @@
 # === CONFIG ===
 TENANT_ID     = "fca47690-ab7d-413c-90e4-aafd92aac945"
 CLIENT_ID     = "e6099f06-7b10-4994-9887-71d0d2d8e19a"
-CLIENT_SECRET = "Myl8Q~Y62Bw.WrGsCrLHbYH9dIDrEd4fuM0qnatW"
+CLIENT_SECRET = ""
 
 DAY_UTC       = "2025-09-01"         # UTC day to export (YYYY-MM-DD)
 SLICE_MINUTES = 1                    # time slice length (1–5 recommended for big tenants)
