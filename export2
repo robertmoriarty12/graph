@@ -1,5 +1,5 @@
 # === CONFIG ===
-TENANT_ID     = "fca47690-ab7d-413c-90e4-aafd92aac945"
+TENANT_ID     = ""
 CLIENT_ID     = ""
 CLIENT_SECRET = ""
 
