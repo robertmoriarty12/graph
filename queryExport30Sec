@@ -1,0 +1,123 @@
+# === CONFIG ===
+TENANT_ID     = "<tenant-guid>"
+CLIENT_ID     = "<client-id>"
+CLIENT_SECRET = "<client-secret>"
+
+DAY_UTC       = "2025-09-01"          # UTC day to export (YYYY-MM-DD)
+SLICE_SECONDS = 30                     # fixed step = 30 seconds
+PAGE_SIZE     = 100000                 # AH max per page
+OUT_DIR       = "out_dne_2025-09-01"  # output folder (created if missing)
+
+# === SCRIPT ===
+import os, time, json, datetime, typing
+import requests
+
+TOKEN_URL   = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+GRAPH_SCOPE = "https://graph.microsoft.com/.default"
+RUN_URL     = "https://graph.microsoft.com/v1.0/security/runHuntingQuery"
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+def get_token() -> str:
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "scope": GRAPH_SCOPE,
+        "grant_type": "client_credentials",
+    }
+    r = requests.post(TOKEN_URL, data=data, timeout=30)
+    r.raise_for_status()
+    return r.json()["access_token"]
+
+def build_kql(slice_start: datetime.datetime,
+              slice_end: datetime.datetime,
+              last_ts: typing.Optional[str],
+              last_report_id: typing.Optional[str]) -> str:
+    s = slice_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    e = slice_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines = []
+    lines.append(f"let SliceStart=datetime({s});")
+    lines.append(f"let SliceEnd=datetime({e});")
+    lines.append(f"let PageSize={PAGE_SIZE};")
+    lines.append("DeviceNetworkEvents")
+    lines.append("| where Timestamp between (SliceStart..SliceEnd)")
+    if last_ts is not None and last_report_id is not None:
+        lines.append(f"| where Timestamp>datetime({last_ts}) or (Timestamp==datetime({last_ts}) and ReportId>\"{last_report_id}\")")
+    lines.append("| order by Timestamp asc,ReportId asc")
+    lines.append("| take PageSize")
+    return "\n".join(lines)
+
+def run_query(token: str, kql: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {"Query": kql}
+    # Simple retry for transient 429/5xx (max 3 tries)
+    for attempt in range(3):
+        resp = requests.post(RUN_URL, headers=headers, json=payload, timeout=170)
+        if resp.status_code in (429, 500, 502, 503, 504):
+            wait = int(resp.headers.get("Retry-After", 2))
+            time.sleep(min(wait, 10))
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    # last try result (raise if still bad)
+    resp.raise_for_status()
+    return resp.json()
+
+def rows_from_graph(result: dict):
+    # Graph returns: { "@odata.context": "...", "schema": [...], "results": [ {...}, ... ] }
+    return result.get("results", []) or []
+
+def iter_slices(day_utc: str, seconds: int):
+    start = datetime.datetime.fromisoformat(day_utc + "T00:00:00+00:00").astimezone(datetime.timezone.utc)
+    end   = start + datetime.timedelta(days=1)
+    step  = datetime.timedelta(seconds=seconds)
+    cur   = start
+    while cur < end:
+        nxt = min(cur + step, end)
+        yield cur, nxt
+        cur = nxt
+
+def drain_slice_to_list(token: str, s: datetime.datetime, e: datetime.datetime):
+    """Pull *all* rows for a 30s slice using seek pagination."""
+    all_rows = []
+    last_ts = None
+    last_rid = None
+    page = 1
+    while True:
+        kql = build_kql(s, e, last_ts, last_rid)
+        data = run_query(token, kql)
+        rows = rows_from_graph(data)
+        if not rows:
+            break
+        all_rows.extend(rows)
+        # anchors for next page
+        last = rows[-1]
+        last_ts  = last.get("Timestamp")
+        last_rid = str(last.get("ReportId"))
+        page += 1
+        if len(rows) < PAGE_SIZE:
+            break
+    return all_rows
+
+def main():
+    token = get_token()
+    total = 0
+    for s, e in iter_slices(DAY_UTC, SLICE_SECONDS):
+        # file per 30s slice: DNE_YYYY-mm-ddTHH-MM-SS.json (Windows-safe; no colons)
+        fname = f"DNE_{s.strftime('%Y-%m-%dT%H-%M-%S')}.json"
+        path  = os.path.join(OUT_DIR, fname)
+        rows  = drain_slice_to_list(token, s, e)
+        if rows:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rows, f, ensure_ascii=False, indent=2)
+            total += len(rows)
+            print(f"[+] {s.isoformat()} → wrote {len(rows)} rows to {path}")
+        else:
+            # optional: comment out if you prefer silence on empty slices
+            print(f"[-] {s.isoformat()} → no rows")
+        # light pacing
+        time.sleep(0.15)
+    print(f"\n[✓] Done. Rows exported: {total}. Files in: {OUT_DIR}")
+
+if __name__ == "__main__":
+    main()
